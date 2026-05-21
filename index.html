@@ -793,46 +793,329 @@ function detalhe(r){
   return r.obs?r.motivo+" — "+r.obs:r.motivo;
 }
 
-/* ---- EXPORTAR EXCEL ---- */
-document.getElementById("btn-xls").addEventListener("click",()=>{
-  if(!registros.length)return alert("Não há apontamentos para exportar.");
-  if(typeof XLSX==="undefined")return exportCSV();
+/* ============ EXPORTAÇÃO EXCEL — .xlsx nativo, funciona 100% offline ============ */
+const _CRC=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
+function _crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=_CRC[(c^b[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function _zip(files){
+  const enc=new TextEncoder(),parts=[],cdir=[];let off=0;
+  files.forEach(f=>{
+    const data=typeof f.data==="string"?enc.encode(f.data):f.data;
+    const name=enc.encode(f.name),crc=_crc32(data);
+    const lh=new Uint8Array(30+name.length),dv=new DataView(lh.buffer);
+    dv.setUint32(0,0x04034b50,true);dv.setUint16(4,20,true);dv.setUint16(12,0x21,true);
+    dv.setUint32(14,crc,true);dv.setUint32(18,data.length,true);dv.setUint32(22,data.length,true);
+    dv.setUint16(26,name.length,true);lh.set(name,30);parts.push(lh,data);
+    const ch=new Uint8Array(46+name.length),cv=new DataView(ch.buffer);
+    cv.setUint32(0,0x02014b50,true);cv.setUint16(4,20,true);cv.setUint16(6,20,true);
+    cv.setUint16(14,0x21,true);cv.setUint32(16,crc,true);
+    cv.setUint32(20,data.length,true);cv.setUint32(24,data.length,true);
+    cv.setUint16(28,name.length,true);cv.setUint32(42,off,true);ch.set(name,46);
+    cdir.push(ch);off+=lh.length+data.length;
+  });
+  const cdSize=cdir.reduce((a,c)=>a+c.length,0);
+  const eo=new Uint8Array(22),ev=new DataView(eo.buffer);
+  ev.setUint32(0,0x06054b50,true);ev.setUint16(8,files.length,true);
+  ev.setUint16(10,files.length,true);ev.setUint32(12,cdSize,true);ev.setUint32(16,off,true);
+  const all=parts.concat(cdir,[eo]),tot=all.reduce((a,c)=>a+c.length,0);
+  const out=new Uint8Array(tot);let p=0;all.forEach(c=>{out.set(c,p);p+=c.length;});
+  return out;
+}
+function _xe(s){return String(s).replace(/[<>&]/g,c=>c==="<"?"&lt;":c===">"?"&gt;":"&amp;");}
+function _col(n){let s="";n++;while(n>0){const m=(n-1)%26;s=String.fromCharCode(65+m)+s;n=(n-m-1)/26;}return s;}
+function _cS(v,s){return{v:v,s:s,t:"s"};}
+function _cN(v,s){return{v:v,s:s,t:"n"};}
+function _cellXML(ref,c){
+  if(!c)return"";
+  if(c.t==="n"&&c.v!==""&&c.v!=null&&!isNaN(c.v))return'<c r="'+ref+'" s="'+c.s+'"><v>'+c.v+'</v></c>';
+  if(c.v===""||c.v==null)return'<c r="'+ref+'" s="'+c.s+'"/>';
+  return'<c r="'+ref+'" s="'+c.s+'" t="inlineStr"><is><t xml:space="preserve">'+_xe(c.v)+'</t></is></c>';
+}
+function _sheetXML(rows,colW,opt){
+  opt=opt||{};
+  let x='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  x+='<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">';
+  x+='<dimension ref="A1:'+_col((colW?colW.length:1)-1)+(rows.length||1)+'"/>';
+  x+='<sheetViews><sheetView showGridLines="0" workbookViewId="0">';
+  if(opt.freeze)x+='<pane ySplit="'+opt.freeze+'" topLeftCell="A'+(opt.freeze+1)+'" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A'+(opt.freeze+1)+'" sqref="A'+(opt.freeze+1)+'"/>';
+  x+='</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>';
+  if(colW&&colW.length){x+='<cols>';colW.forEach((w,i)=>{x+='<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>';});x+='</cols>';}
+  x+='<sheetData>';
+  rows.forEach((row,ri)=>{
+    const r=ri+1;
+    x+='<row r="'+r+'"'+(row.h?' ht="'+row.h+'" customHeight="1"':'')+'>';
+    (row.cells||[]).forEach((c,ci)=>{if(c)x+=_cellXML(_col(ci)+r,c);});
+    x+='</row>';
+  });
+  x+='</sheetData>';
+  if(opt.autoFilter)x+='<autoFilter ref="'+opt.autoFilter+'"/>';
+  if(opt.merges&&opt.merges.length){x+='<mergeCells count="'+opt.merges.length+'">';opt.merges.forEach(m=>{x+='<mergeCell ref="'+m+'"/>';});x+='</mergeCells>';}
+  if(opt.cf)opt.cf.forEach((cf,i)=>{x+='<conditionalFormatting sqref="'+cf.ref+'"><cfRule type="dataBar" priority="'+(i+1)+'"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="'+cf.color+'"/></dataBar></cfRule></conditionalFormatting>';});
+  if(opt.drawing)x+='<drawing r:id="'+opt.drawing+'"/>';
+  x+='</worksheet>';
+  return x;
+}
+function _stylesXML(){
+  const xf=[
+    [0,0,0,0,null],[0,3,2,0,["left","center",0]],[0,7,2,0,["left","center",0]],
+    [0,2,3,1,["center","center",1]],[0,0,0,1,["left","center",0]],[0,0,0,1,["center","center",0]],
+    [0,0,10,1,["left","center",0]],[0,0,10,1,["center","center",0]],
+    [0,1,7,1,["center","center",0]],[0,1,8,1,["center","center",0]],
+    [0,2,3,0,["center","center",0]],[0,4,3,0,["center","center",0]],
+    [0,2,4,0,["center","center",0]],[0,4,4,0,["center","center",0]],
+    [0,2,5,0,["center","center",0]],[0,4,5,0,["center","center",0]],
+    [0,2,11,0,["center","center",0]],[0,3,11,0,["center","center",0]],
+    [0,2,2,0,["left","center",0]],[0,2,3,1,["center","center",0]],
+    [0,6,9,1,["left","center",0]],[164,1,0,1,["left","center",0]],
+    [0,1,0,1,["center","center",0]],[165,1,0,1,["left","center",0]],
+    [164,0,0,1,["center","center",0]],[164,0,10,1,["center","center",0]]
+  ];
+  let s='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  s+='<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
+  s+='<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="[h]&quot;h&quot;mm"/></numFmts>';
+  s+='<fonts count="8">'+
+    '<font><sz val="11"/><name val="Segoe UI"/></font>'+
+    '<font><b/><sz val="11"/><name val="Segoe UI"/></font>'+
+    '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Segoe UI"/></font>'+
+    '<font><b/><sz val="16"/><color rgb="FFFFFFFF"/><name val="Segoe UI"/></font>'+
+    '<font><b/><sz val="20"/><color rgb="FFFFFFFF"/><name val="Segoe UI"/></font>'+
+    '<font><sz val="9"/><color rgb="FF7A8290"/><name val="Segoe UI"/></font>'+
+    '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Segoe UI"/></font>'+
+    '<font><sz val="10"/><color rgb="FFC9D1DC"/><name val="Segoe UI"/></font></fonts>';
+  const fc=[0,0,"FF1F2937","FF3866F7","FF22C55E","FFEF4444","FFEAF1FF","FFE8F8EE","FFFDEAE8","FFEEF1F5","FFF7F9FB","FF475569"];
+  s+='<fills count="12"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>';
+  for(let i=2;i<12;i++)s+='<fill><patternFill patternType="solid"><fgColor rgb="'+fc[i]+'"/></patternFill></fill>';
+  s+='</fills>';
+  s+='<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'+
+    '<border><left style="thin"><color rgb="FFDDE2E9"/></left><right style="thin"><color rgb="FFDDE2E9"/></right>'+
+    '<top style="thin"><color rgb="FFDDE2E9"/></top><bottom style="thin"><color rgb="FFDDE2E9"/></bottom><diagonal/></border></borders>';
+  s+='<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>';
+  s+='<cellXfs count="'+xf.length+'">';
+  xf.forEach(d=>{
+    s+='<xf numFmtId="'+d[0]+'" fontId="'+d[1]+'" fillId="'+d[2]+'" borderId="'+d[3]+'" xfId="0" applyNumberFormat="'+(d[0]?1:0)+'" applyFont="1" applyFill="1" applyBorder="1"'+(d[4]?' applyAlignment="1">':'>');
+    if(d[4])s+='<alignment horizontal="'+d[4][0]+'" vertical="'+d[4][1]+'"'+(d[4][2]?' wrapText="1"':'')+'/>';
+    s+='</xf>';
+  });
+  s+='</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  return s;
+}
+/* ---- gráfico de barras horizontais nativo do Excel ---- */
+function _chartXML(title,catF,valF,cats,vals,colors){
+  const n=cats.length,esc=_xe;
+  const strCache='<c:strCache><c:ptCount val="'+n+'"/>'+
+    cats.map((c,i)=>'<c:pt idx="'+i+'"><c:v>'+esc(c)+'</c:v></c:pt>').join('')+'</c:strCache>';
+  const numCache='<c:numCache><c:formatCode>#,##0</c:formatCode><c:ptCount val="'+n+'"/>'+
+    vals.map((v,i)=>'<c:pt idx="'+i+'"><c:v>'+v+'</c:v></c:pt>').join('')+'</c:numCache>';
+  let dpts='';
+  if(colors.length>1){
+    for(let i=0;i<n;i++)dpts+='<c:dPt><c:idx val="'+i+'"/><c:invertIfNegative val="0"/><c:bubble3D val="0"/>'+
+      '<c:spPr><a:solidFill><a:srgbClr val="'+colors[i%colors.length]+'"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr></c:dPt>';
+  }
+  const axFont='<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="900"><a:latin typeface="Segoe UI"/></a:defRPr></a:pPr><a:endParaRPr lang="pt-BR"/></a:p></c:txPr>';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+  '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+
+  '<c:roundedCorners val="0"/>'+
+  '<c:chart>'+
+  '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1100" b="1"><a:solidFill><a:srgbClr val="1F2937"/></a:solidFill><a:latin typeface="Segoe UI"/></a:defRPr></a:pPr>'+
+  '<a:r><a:rPr lang="pt-BR" sz="1100" b="1"><a:solidFill><a:srgbClr val="1F2937"/></a:solidFill><a:latin typeface="Segoe UI"/></a:rPr><a:t>'+esc(title)+'</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>'+
+  '<c:autoTitleDeleted val="0"/>'+
+  '<c:plotArea><c:layout/>'+
+  '<c:barChart><c:barDir val="bar"/><c:grouping val="clustered"/><c:varyColors val="0"/>'+
+  '<c:ser><c:idx val="0"/><c:order val="0"/>'+
+  '<c:tx><c:v>'+esc(title)+'</c:v></c:tx>'+
+  '<c:spPr><a:solidFill><a:srgbClr val="'+colors[0]+'"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr>'+
+  '<c:invertIfNegative val="0"/>'+
+  dpts+
+  '<c:dLbls><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>'+
+  '<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="900" b="1"><a:latin typeface="Segoe UI"/></a:defRPr></a:pPr><a:endParaRPr lang="pt-BR"/></a:p></c:txPr>'+
+  '<c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>'+
+  '<c:cat><c:strRef><c:f>'+catF+'</c:f>'+strCache+'</c:strRef></c:cat>'+
+  '<c:val><c:numRef><c:f>'+valF+'</c:f>'+numCache+'</c:numRef></c:val>'+
+  '</c:ser>'+
+  '<c:gapWidth val="55"/>'+
+  '<c:axId val="111111111"/><c:axId val="222222222"/>'+
+  '</c:barChart>'+
+  '<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="maxMin"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>'+axFont+'<c:crossAx val="222222222"/></c:catAx>'+
+  '<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>'+
+  '<c:numFmt formatCode="#,##0" sourceLinked="0"/>'+axFont+'<c:crossAx val="111111111"/></c:valAx>'+
+  '</c:plotArea>'+
+  '<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/>'+
+  '</c:chart>'+
+  '</c:chartSpace>';
+}
+function _drawingXML(charts){
+  let x='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+  '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">';
+  charts.forEach((c,i)=>{
+    x+='<xdr:twoCellAnchor>'+
+    '<xdr:from><xdr:col>'+c.fromCol+'</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>'+c.fromRow+'</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'+
+    '<xdr:to><xdr:col>'+c.toCol+'</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>'+c.toRow+'</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'+
+    '<xdr:graphicFrame macro="">'+
+    '<xdr:nvGraphicFramePr><xdr:cNvPr id="'+(i+2)+'" name="Grafico'+(i+1)+'"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>'+
+    '<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>'+
+    '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'+
+    '<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="'+c.rId+'"/>'+
+    '</a:graphicData></a:graphic>'+
+    '</xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>';
+  });
+  return x+'</xdr:wsDr>';
+}
+function buildXLSX(){
+  const pad=n=>String(n).padStart(2,"0"),now=new Date();
+  const carimbo=pad(now.getDate())+"/"+pad(now.getMonth()+1)+"/"+now.getFullYear()+" "+pad(now.getHours())+":"+pad(now.getMinutes());
+  const gv=id=>{const el=(typeof document!=="undefined")&&document.getElementById(id);return el?el.value:"";};
+  const fm=gv("d-fmodelo"),ft=gv("d-fturno"),fd=gv("d-fdata");
+  const partes=[];
+  if(fm)partes.push("Modelo "+fm);
+  if(ft)partes.push(TLABEL[ft]);
+  if(fd){const p=fd.split("-");partes.push(p[2]+"/"+p[1]+"/"+p[0]);}
+  const escopo=partes.length?("Filtro aplicado: "+partes.join("   ·   ")):"Visao global — todos os apontamentos";
+
+  /* ----- ABA 1: APONTAMENTOS — todos os dados, com filtro do Excel ----- */
   const ord=[...registros].slice().reverse();
-  const dados=[["Data","Turno","Tipo","Embalagem / Motivo","Hora Inicial","Hora Final","Duração","Embalagens Lavadas"]];
-  ord.forEach(r=>{
-    const[y,m,d]=r.data.split("-");
-    dados.push([d+"/"+m+"/"+y,TLABEL[r.turno],TPLABEL[r.tipo],detalhe(r),
-                r.hi,r.hf,fmtMin(mins(r.hi,r.hf)),r.tipo==="lav"?r.total:""]);
+  const cab=["Data","Turno","Tipo","Embalagem","Motivo","Observação","Hora Inicial","Hora Final","Duração","Embalagens Lavadas"];
+  const s1=[];
+  s1.push({h:30,cells:[_cS("SAS · LAVADORA DE EMBALAGEM — APONTAMENTOS",1)]});
+  s1.push({h:18,cells:[_cS("Exportado em "+carimbo+"   ·   "+registros.length+" registro(s) — clique nas setas do cabeçalho para filtrar",2)]});
+  s1.push({h:6,cells:[]});
+  s1.push({h:26,cells:cab.map(t=>_cS(t,3))});
+  ord.forEach((r,i)=>{
+    const z=i%2===1,d=z?6:4,dc=z?7:5,dn=z?25:24,p=r.data.split("-");
+    s1.push({h:18,cells:[
+      _cS(p[2]+"/"+p[1]+"/"+p[0],d),
+      _cS(TLABEL[r.turno],dc),
+      _cS(TPLABEL[r.tipo],r.tipo==="lav"?8:9),
+      _cS(r.tipo==="lav"?r.emb:"",d),
+      _cS(r.tipo==="par"?r.motivo:"",d),
+      _cS(r.tipo==="par"?(r.obs||""):"",d),
+      _cS(r.hi,dc),_cS(r.hf,dc),
+      _cS(fmtMin(mins(r.hi,r.hf)),dc),
+      r.tipo==="lav"?_cN(r.total,dn):_cS("",dc)
+    ]});
   });
-  const wsD=XLSX.utils.aoa_to_sheet(dados);
-  wsD["!cols"]=[{wch:12},{wch:11},{wch:20},{wch:28},{wch:12},{wch:12},{wch:11},{wch:20}];
 
-  const res=[["RESUMO POR TURNO"],["Turno","Lavagens","Embalagens Lavadas","Tempo Parado"]];
+  /* ----- ABA 2: DASHBOARD — reflete os filtros aplicados na ferramenta ----- */
+  const base=registros.filter(r=>(!ft||r.turno===ft)&&(!fd||r.data===fd));
+  const lav=base.filter(r=>r.tipo==="lav"&&(!fm||r.emb===fm));
+  const par=base.filter(r=>r.tipo==="par");
+  const totEmb=lav.reduce((a,r)=>a+r.total,0);
+  const totParMin=par.reduce((a,r)=>a+mins(r.hi,r.hf),0);
+  const porEmb=EMBALAGENS.map(e=>({k:e,
+    n:lav.filter(r=>r.emb===e).length,
+    v:lav.filter(r=>r.emb===e).reduce((a,r)=>a+r.total,0)}));
+  const top=[...porEmb].sort((a,b)=>b.v-a.v)[0];
+  let embRows=porEmb.filter(e=>e.v>0).sort((a,b)=>b.v-a.v);
+  if(!embRows.length)embRows=[{k:"Nenhuma lavagem no período",n:0,v:0}];
+
+  const s2=[];
+  s2.push({h:30,cells:[_cS("DASHBOARD — SAS LAVADORA DE EMBALAGEM",1)]});
+  s2.push({h:18,cells:[_cS("Gerado em "+carimbo+"   ·   "+escopo,2)]});
+  s2.push({h:6,cells:[]});
+  s2.push({h:22,cells:[_cS("INDICADORES GERAIS",18)]});
+  s2.push({h:18,cells:[_cS("EMBALAGENS LAVADAS",10),null,null,_cS("TOTAL DE LAVAGENS",12)]});
+  s2.push({h:38,cells:[_cN(totEmb,11),null,null,_cN(lav.length,13)]});
+  s2.push({h:18,cells:[_cS("TEMPO TOTAL DE PARADA",14),null,null,_cS("EMBALAGEM MAIS LAVADA",16)]});
+  s2.push({h:38,cells:[_cS(fmtMin(totParMin),15),null,null,_cS((top&&top.v>0)?top.k:"—",17)]});
+  s2.push({h:6,cells:[]});
+  s2.push({h:22,cells:[_cS("EMBALAGENS LAVADAS POR TURNO",18)]}); const rTB=s2.length;
+  s2.push({h:20,cells:[_cS("Turno",19),_cS("Embalagens Lavadas",19),_cS("Tempo Parado (min)",19)]});
   ["1","2","3"].forEach(t=>{
-    const rt=registros.filter(r=>r.turno===t);
-    const lv=rt.filter(r=>r.tipo==="lav");
-    const pr=rt.filter(r=>r.tipo==="par");
-    res.push([TLABEL[t],lv.length,lv.reduce((a,r)=>a+r.total,0),
-              fmtMin(pr.reduce((a,r)=>a+mins(r.hi,r.hf),0))]);
+    const le=lav.filter(r=>r.turno===t).reduce((a,r)=>a+r.total,0);
+    const pt=par.filter(r=>r.turno===t).reduce((a,r)=>a+mins(r.hi,r.hf),0);
+    s2.push({h:19,cells:[_cS(TLABEL[t],20),_cN(le,21),_cN(pt,21)]});
   });
-  res.push([],["EMBALAGENS LAVADAS POR TIPO"],["Embalagem","Lavagens","Total Lavadas"]);
-  EMBALAGENS.forEach(e=>{
-    const rs=registros.filter(r=>r.tipo==="lav"&&r.emb===e);
-    res.push([e,rs.length,rs.reduce((a,r)=>a+r.total,0)]);
-  });
-  res.push([],["PARADA DE MÁQUINA POR MOTIVO"],["Motivo","Ocorrências","Tempo Parado"]);
+  s2.push({h:6,cells:[]});
+  s2.push({h:22,cells:[_cS("PARADA DE MÁQUINA POR MOTIVO",18)]}); const rMB=s2.length;
+  s2.push({h:20,cells:[_cS("Motivo",19),_cS("Ocorrências",19),_cS("Tempo Parado (min)",19)]});
   MOTIVOS.forEach(mo=>{
-    const rs=registros.filter(r=>r.tipo==="par"&&r.motivo===mo);
-    res.push([mo,rs.length,fmtMin(rs.reduce((a,r)=>a+mins(r.hi,r.hf),0))]);
+    const rs=par.filter(r=>r.motivo===mo),tm=rs.reduce((a,r)=>a+mins(r.hi,r.hf),0);
+    s2.push({h:19,cells:[_cS(mo,20),_cN(rs.length,21),_cN(tm,21)]});
   });
-  const wsR=XLSX.utils.aoa_to_sheet(res);
-  wsR["!cols"]=[{wch:28},{wch:14},{wch:18},{wch:14}];
+  s2.push({h:6,cells:[]});
+  s2.push({h:22,cells:[_cS("EMBALAGENS LAVADAS POR TIPO",18)]}); const rEB=s2.length;
+  s2.push({h:20,cells:[_cS("Embalagem",19),_cS("Lavagens",19),_cS("Total Lavadas",19)]});
+  embRows.forEach(e=>{ s2.push({h:19,cells:[_cS(e.k,20),_cN(e.n,21),_cN(e.v,21)]}); });
 
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,wsD,"Apontamentos");
-  XLSX.utils.book_append_sheet(wb,wsR,"Dashboard");
-  XLSX.writeFile(wb,"SAS-Lavadora-Embalagem.xlsx");
-});
+  const nMot=MOTIVOS.length,nEmb=embRows.length;
+  const merges2=["A1:F1","A2:F2","A4:F4","A5:C5","D5:F5","A6:C6","D6:F6","A7:C7","D7:F7","A8:C8","D8:F8",
+    "A"+rTB+":F"+rTB,"A"+rMB+":F"+rMB,"A"+rEB+":F"+rEB];
+  const cf2=[
+    {ref:"B"+(rTB+2)+":B"+(rTB+4),color:"FF3866F7"},
+    {ref:"C"+(rMB+2)+":C"+(rMB+1+nMot),color:"FFEF4444"},
+    {ref:"C"+(rEB+2)+":C"+(rEB+1+nEmb),color:"FF22C55E"}
+  ];
+
+  const turCats=["1","2","3"].map(t=>TLABEL[t]);
+  const turVals=["1","2","3"].map(t=>lav.filter(r=>r.turno===t).reduce((a,r)=>a+r.total,0));
+  const motVals=MOTIVOS.map(mo=>par.filter(r=>r.motivo===mo).reduce((a,r)=>a+mins(r.hi,r.hf),0));
+  const embVals=embRows.map(e=>e.v),embCats=embRows.map(e=>e.k);
+
+  const chart1=_chartXML("Embalagens Lavadas por Turno",
+    "Dashboard!$A$"+(rTB+2)+":$A$"+(rTB+4),"Dashboard!$B$"+(rTB+2)+":$B$"+(rTB+4),
+    turCats,turVals,["3866F7","00B8A3","9A6CF0"]);
+  const chart2=_chartXML("Parada de Máquina por Motivo (min)",
+    "Dashboard!$A$"+(rMB+2)+":$A$"+(rMB+1+nMot),"Dashboard!$C$"+(rMB+2)+":$C$"+(rMB+1+nMot),
+    MOTIVOS,motVals,["F0533F"]);
+  const chart3=_chartXML("Embalagens Lavadas por Tipo",
+    "Dashboard!$A$"+(rEB+2)+":$A$"+(rEB+1+nEmb),"Dashboard!$C$"+(rEB+2)+":$C$"+(rEB+1+nEmb),
+    embCats,embVals,["3866F7"]);
+  const drawing1=_drawingXML([
+    {rId:"rId1",fromCol:7,fromRow:3,toCol:17,toRow:22},
+    {rId:"rId2",fromCol:7,fromRow:23,toCol:17,toRow:45},
+    {rId:"rId3",fromCol:7,fromRow:46,toCol:17,toRow:71}
+  ]);
+
+  const sheet1=_sheetXML(s1,[13,12,16,22,26,30,12,12,11,17],
+    {freeze:4,autoFilter:"A4:J"+(4+ord.length),merges:["A1:J1","A2:J2"]});
+  const sheet2=_sheetXML(s2,[28,22,22,28,22,22],{merges:merges2,cf:cf2,drawing:"rId1"});
+
+  const ct='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'+
+    '<Default Extension="xml" ContentType="application/xml"/>'+
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'+
+    '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'+
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+
+    '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'+
+    '<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'+
+    '<Override PartName="/xl/charts/chart2.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'+
+    '<Override PartName="/xl/charts/chart3.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>';
+  const rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+  const wbx='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Apontamentos" sheetId="1" r:id="rId1"/><sheet name="Dashboard" sheetId="2" r:id="rId2"/></sheets></workbook>';
+  const wbr='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+  const sheet2rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>';
+  const draw1rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart3.xml"/></Relationships>';
+
+  return _zip([
+    {name:"[Content_Types].xml",data:ct},
+    {name:"_rels/.rels",data:rels},
+    {name:"xl/workbook.xml",data:wbx},
+    {name:"xl/_rels/workbook.xml.rels",data:wbr},
+    {name:"xl/styles.xml",data:_stylesXML()},
+    {name:"xl/worksheets/sheet1.xml",data:sheet1},
+    {name:"xl/worksheets/sheet2.xml",data:sheet2},
+    {name:"xl/worksheets/_rels/sheet2.xml.rels",data:sheet2rels},
+    {name:"xl/drawings/drawing1.xml",data:drawing1},
+    {name:"xl/drawings/_rels/drawing1.xml.rels",data:draw1rels},
+    {name:"xl/charts/chart1.xml",data:chart1},
+    {name:"xl/charts/chart2.xml",data:chart2},
+    {name:"xl/charts/chart3.xml",data:chart3}
+  ]);
+}
+function exportXLSX(){
+  if(!registros.length)return alert("Não há apontamentos para exportar.");
+  try{
+    const blob=new Blob([buildXLSX()],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="SAS-Lavadora-Embalagem.xlsx";
+    document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1500);
+  }catch(err){
+    console.error(err);
+    alert("Não foi possível gerar o Excel. Use o botão CSV como alternativa.");
+  }
+}
+document.getElementById("btn-xls").addEventListener("click",exportXLSX);
 
 function exportCSV(){
   if(!registros.length)return alert("Não há apontamentos para exportar.");
